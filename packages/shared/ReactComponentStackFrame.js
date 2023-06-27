@@ -60,6 +60,97 @@ if (__DEV__) {
   componentFrameCache = new PossiblyWeakMap<Function, string>();
 }
 
+/**
+ * A `prepareStackTrace` method that roughly mimicks how V8 generates stack
+ * traces. This is used to ensure a consistent stack trace format for different
+ * VMs that support V8's stack trace API: https://v8.dev/docs/stack-trace-api
+ *
+ * For example, the Hermes VM currently truncates stack traces in the middle
+ * (https://github.com/facebook/hermes/blob/d8ce9fccaf2ff964f09fecc033c480fb23f65a4c/lib/VM/JSError.cpp#L701-L705)
+ * which ends up break component trace generation for cases where React is
+ * running in Hermes (e.g. React Native). This method will ensure that the
+ * truncation of traces always happens at the bottom to match what
+ * `describeNativeComponentFrame` expects.
+ *
+ * Implementation here is roughly based off of description in:
+ * https://v8.dev/docs/stack-trace-api as well viewing sample stack traces
+ * from V8.
+ */
+export function prepareStackTrace(
+  err: Error,
+  /* global CallSite */
+  callsites: Array<CallSite>,
+): string {
+  let trace = `${err.name}: ${err.message}`;
+  for (
+    let i = 0;
+    i < Math.min(callsites.length, Error.stackTraceLimit || 100);
+    i++
+  ) {
+    const callsite = callsites[i];
+    trace += '\n    at ';
+
+    // The following methods should be available for VM versions that support
+    // async stack traces.
+    // $FlowFixMe[prop-missing]
+    // $FlowFixMe[incompatible-use]
+    if (callsite.isPromiseAll()) {
+      // $FlowFixMe[prop-missing]
+      return `${trace} async Promise.all (index ${callsite.getPromiseIndex()})`;
+    }
+
+    let caller = '';
+    const typeName = callsite.getTypeName();
+    if (callsite.isConstructor()) {
+      caller += 'new ';
+    } else if (typeName != null && !callsite.isToplevel()) {
+      caller += `${typeName}.`;
+    }
+
+    const functionName = callsite.getFunctionName();
+    const methodName = callsite.getMethodName();
+    if (
+      functionName != null &&
+      methodName != null &&
+      !callsite.isConstructor() &&
+      functionName !== methodName
+    ) {
+      caller += `${functionName} [as ${methodName}]`;
+    } else if (functionName != null) {
+      caller += functionName;
+    } else if (methodName != null) {
+      caller += methodName;
+    } else if (caller !== '') {
+      caller += '<anonymous>';
+    }
+
+    const evalOrigin = callsite.getEvalOrigin();
+    let location = '';
+    if (callsite.isEval() && evalOrigin != null) {
+      location += `${evalOrigin.toString()}, `;
+    }
+
+    const filename = callsite.getFileName();
+    if (callsite.isNative()) {
+      location += 'native';
+    } else if (filename != null) {
+      location += `${filename}`;
+    } else {
+      location += '<anonymous>';
+    }
+    const line = callsite.getLineNumber();
+    if (line != null) {
+      location += `:${line}`;
+      const col = callsite.getColumnNumber();
+      if (col != null) {
+        location += `:${col}`;
+      }
+    }
+    trace += caller !== '' ? `${caller} (${location})` : location;
+  }
+  return trace;
+}
+
 export function describeNativeComponentFrame(
   fn: Function,
   construct: boolean,
@@ -80,8 +171,7 @@ export function describeNativeComponentFrame(
 
   reentry = true;
   const previousPrepareStackTrace = Error.prepareStackTrace;
-  // $FlowFixMe[incompatible-type] It does accept undefined.
-  Error.prepareStackTrace = undefined;
+  Error.prepareStackTrace = prepareStackTrace;
   let previousDispatcher;
   if (__DEV__) {
     previousDispatcher = ReactCurrentDispatcher.current;
