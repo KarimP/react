@@ -95,7 +95,10 @@ export function describeNativeComponentFrame(
     if (construct) {
       // Something should be setting the props in the constructor.
       const Fake = function () {
-        throw Error();
+        // This error code is purely internal to this function to differentiate
+        // from what the component call might throw
+        // eslint-disable-next-line react-internal/prod-error-codes
+        throw Error('describeNativeComponentFrame Control Error');
       };
       // $FlowFixMe[prop-missing]
       Object.defineProperty(Fake.prototype, 'props', {
@@ -125,7 +128,10 @@ export function describeNativeComponentFrame(
       }
     } else {
       try {
-        throw Error();
+        // This error code is purely internal to this function to differentiate
+        // from what the component call might throw
+        // eslint-disable-next-line react-internal/prod-error-codes
+        throw Error('describeNativeComponentFrame Control Error');
       } catch (x) {
         control = x;
       }
@@ -149,16 +155,21 @@ export function describeNativeComponentFrame(
       // Skipping one frame that we assume is the frame that calls the two.
       const sampleLines = sample.stack.split('\n');
       const controlLines = control.stack.split('\n');
-      let s = sampleLines.length - 1;
-      let c = controlLines.length - 1;
-      while (s >= 1 && c >= 0 && sampleLines[s] !== controlLines[c]) {
-        // We expect at least one stack frame to be shared.
-        // Typically this will be the root most one. However, stack frames may be
-        // cut off due to maximum stack limits. In this case, one maybe cut off
-        // earlier than the other. We assume that the sample is longer or the same
-        // and there for cut off earlier. So we should find the root most frame in
-        // the sample somewhere in the control.
-        c--;
+      let s = 0;
+      let c = 0;
+
+      // Go over frames in control from the top/latest and attempt to find a
+      // match in the sample frame. This will be the closest common "root"
+      // frame.
+      for (; c < controlLines.length; c++) {
+        for (
+          s = 1;
+          s < sampleLines.length && sampleLines[s] !== controlLines[c];
+          s++
+        ) {}
+        if (sampleLines[s] === controlLines[c]) {
+          break;
+        }
       }
       for (; s >= 1 && c >= 0; s--, c--) {
         // Next we find the first one that isn't the same which should be the
